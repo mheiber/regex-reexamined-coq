@@ -11,7 +11,8 @@ Variable X: Set.
 Parameter compare : X -> X -> comparison.
 Parameter proof_compare_equal: forall (x y: X) (p: compare x y = Eq),
   x = y.
-Parameter proof_compare_reflex: forall (x: X), compare x x = Eq. 
+Parameter proof_compare_reflex: forall (x: X), compare x x = Eq.
+Parameter proof_compare_if_equal: forall (x1 x2: X) (c: compare x1 x2 = compare x2 x1), x1 = x2.
 
 Definition is_eq (x y: X) : bool :=
   match compare x y with
@@ -188,6 +189,61 @@ induction r; try reflexivity; simpl.
 - rewrite IHr. reflexivity.
 Qed.
 
+Theorem compare_is_equal : forall (r1 r2: regex)
+  (c: compare_regex r1 r2 = compare_regex r2 r1),
+  r1 = r2.
+induction r1, r2; try reflexivity; try discriminate.
+- remember (compare_regex (char x) (char x0)) as ccharxx0.
+  induction ccharxx0.
+  + symmetry in Heqccharxx0.
+    simpl in Heqccharxx0.
+    apply (proof_compare_equal x x0) in Heqccharxx0.
+    rewrite Heqccharxx0.
+    simpl.
+    rewrite proof_compare_reflex.
+    trivial.
+  + simpl in Heqccharxx0.
+    simpl.
+    rewrite Heqccharxx0.
+    rewrite (proof_compare_if_equal x x0).
+    * rewrite proof_compare_reflex.
+      trivial.
+    * apply proof_compare_equal_only_if.
+    
+
+
+Lemma compare_regex_gt_lt:
+ forall (r1 r2: regex)
+ (c: compare_regex r1 r2 = Gt),
+ compare_regex r2 r1 = Lt.
+Proof.
+intros.
+induction r2, r1; simpl; try discriminate; try trivial.
+- simpl in c.
+  apply proof_compare_gt_lt.
+  apply c.
+- remember (compare_regex r2_1 r1_1).
+  induction c0.
+  + remember (compare_regex r2_2 r1_2) as c1.
+    symmetry in Heqc0.
+    apply compare_equal in Heqc0.
+    induction c1.
+    * symmetry in Heqc1.
+      apply compare_equal in Heqc1.
+      rewrite Heqc0 in c.
+      rewrite Heqc1 in c.
+      simpl in c.
+      rewrite (compare_reflex r1_1) in c.
+      rewrite (compare_reflex r1_2) in c.
+      discriminate.
+    * reflexivity.
+    * rewrite Heqc0 in c.
+      simpl in c.
+      rewrite (compare_reflex r1_1) in c.
+      symmetry in Heqc1.
+      rewrite <- Heqc1 in c.
+      rewrite <- c.
+
 (* nullable returns whether the regular expression matches the
    empty string, for example:
    nullable (ab)*        = true
@@ -240,6 +296,19 @@ Definition matches (r: regex) (xs: list X) : bool :=
   nullable (fold_left derive xs r)
 .
 
+(* simple is the property that says whether the regex is simplified *)
+Fixpoint simple (r: regex) : Prop :=
+ match r with
+ | nothing => True
+ | empty => True
+ | char _ => True
+ | or s t => simple s /\ simple t /\ compare_regex s t = Lt
+ | and s t => simple s /\ simple t
+ | concat s t => simple s /\ simple t
+ | not s => simple s
+ | zero_or_more s => simple s
+ end.
+
 (* sderive is the same as derive, except that it applies
    simplification rules by construction.
    This way we don't have to apply simplification after derivation.
@@ -260,19 +329,108 @@ Fixpoint sderive (r: regex) (x: X) : regex :=
   | char y => if is_eq x y
     then empty
     else nothing
-  | or s t => smart_or (derive s x) (derive t x)
-  | and s t => and (derive s x) (derive t x)
+  | or s t => smart_or (sderive s x) (sderive t x)
+  | and s t => and (sderive s x) (sderive t x)
   | concat s t =>
     if nullable s
-    then or (concat (derive s x) t) (derive t x)
-    else concat (derive s x) t
-  | not s => not (derive s x)
-  | zero_or_more s => concat (derive s x) (zero_or_more s)
+    then smart_or (concat (sderive s x) t) (sderive t x)
+    else concat (sderive s x) t
+  | not s => not (sderive s x)
+  | zero_or_more s => concat (sderive s x) (zero_or_more s)
   end.
+
+Lemma sderive_simple_or:
+ forall (r1 r2: regex) (x: X)
+        (sor: simple (or r1 r2)) 
+        (Hsr1: simple r1 -> simple (sderive r1 x))
+        (Hsr2: simple r2 -> simple (sderive r2 x)),
+        simple (smart_or (sderive r1 x) (sderive r2 x)).
+Proof.
+ intros.
+ simpl in sor.
+ destruct sor as [sr1 [sr2 clt]].
+ remember (Hsr1 sr1) as sdr1.
+ remember (Hsr2 sr2) as sdr2.
+ unfold smart_or.
+ remember (compare_regex (sderive r1 x) (sderive r2 x)) as c.
+ induction c.
+ - apply sdr2.
+ - simpl.
+   split.
+   apply sdr1.
+   split.
+   apply sdr2.
+   symmetry in Heqc.
+   apply Heqc.
+ - simpl.
+   split.
+   apply sdr2.
+   split.
+   apply sdr1.
+   rewrite <- Heqc.
+   symmetry in Heqc.
+   rewrite <- Heqc.
+Admitted.
+
+Lemma sderive_simple_and:
+ forall (r1 r2: regex) (x: X)
+        (is_simple: simple (and r1 r2)) 
+        (IHr1: simple r1 -> simple (sderive r1 x))
+        (IHr2: simple r2 -> simple (sderive r2 x)),
+        simple (and (sderive r1 x) (sderive r2 x)).
+Proof.
+ intros.
+ simpl in is_simple.
+ destruct is_simple as [sr1 sr2].
+ remember (IHr1 sr1) as sdr1.
+ remember (IHr2 sr2) as sdr2.
+ split.
+ apply sdr1.
+ apply sdr2.
+Qed.
+
+Lemma sderive_simple_concat:
+ forall (r1 r2: regex) (x: X)
+        (is_simple: simple (and r1 r2)) 
+        (IHr1: simple r1 -> simple (sderive r1 x))
+        (IHr2: simple r2 -> simple (sderive r2 x)),
+        simple
+         (if nullable r1
+           then or (concat (sderive r1 x) r2) (sderive r2 x)
+           else concat (sderive r1 x) r2).
+Proof.
+ intros.
+ simpl in is_simple.
+ destruct is_simple as [sr1 sr2].
+ remember (IHr1 sr1) as sdr1.
+ remember (IHr2 sr2) as sdr2.
+ remember (nullable r1) as n.
+ induction (nullable r1); rewrite Heqn; simpl.
+ - rewrite Heqn.
+Qed.
+
+
+
+
+Theorem sderive_is_closed_under_simple :
+ forall (r: regex) (x: X) (is_simple: simple r),
+ simple (sderive r x).
+Proof.
+ intros.
+ induction r; simpl; try trivial.
+ - remember (is_eq x x0).
+   induction (is_eq x x0); rewrite Heqb; simpl; try trivial.
+ - apply (sderive_simple_or r1 r2 x is_simple IHr1 IHr2).
+ - apply (sderive_simple_and r1 r2 x is_simple IHr1 IHr2).
+ - 
+   
+ 
+ 
 
 Definition smatches (r: regex) (xs: list X) : bool :=
   nullable (fold_left sderive xs r)
 .
+ 
 
 (*Using only or_comm, or_assoc and or_idemp 
   Brzozowski proved that a notion of RE similarity including only
@@ -609,6 +767,8 @@ eqv_char a b (not r).
 Proof.
 (* TODO *)
 Admitted.
+
+
 
 End Regexes.
 
